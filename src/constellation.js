@@ -62,7 +62,7 @@ export class Constellation {
     this.t0 = performance.now(); this.running = true; this.hover = -1; this._last = 0; this.frames = 0; this.spinPause = 0;
     this.root = document.createElement("div"); this.root.className = "nebula-root"; el.appendChild(this.root);
     this._build(); this._ui(); this._events(); this.apply();
-    this._loop = this._loop.bind(this); requestAnimationFrame(this._loop);
+    this._loop = this._loop.bind(this); window.requestAnimationFrame(this._loop);
   }
 
   _build() {
@@ -218,13 +218,13 @@ export class Constellation {
     const mk = (cls, parent = this.root, tag = "div") => { const e = document.createElement(tag); e.className = cls; parent.appendChild(e); return e; };
     this.labelLayer = mk("nebula-labels");
     this.hubLabels = this.groupInfo.map((g) => { const e = mk("nebula-label", this.labelLayer); mk("", e, "b").textContent = g.name; mk("", e, "span").textContent = `${g.count} notes`; e.addEventListener("click", () => this.focusSlot(g.slot)); return e; });
-    this.tip = mk("nebula-tip"); this.tip.style.display = "none";
+    this.tip = mk("nebula-tip"); this.tip.classList.add("is-hidden");
     mk("nebula-hud").textContent = `${this.data.notes.length.toLocaleString()} notes · ${this.groupInfo.length} rings · ${this.edges.length.toLocaleString()} links`;
     this.fpsEl = mk("nebula-fps");
     mk("nebula-hint").textContent = "Left drag to spin any way · right drag to move · scroll to zoom · click a note to open it";
     const bar = mk("nebula-bar");
     const b1 = mk("nebula-btn", bar, "button"); b1.textContent = "Reset view"; b1.addEventListener("click", () => this.resetView());
-    const b2 = mk("nebula-btn", bar, "button"); b2.textContent = "Focus (F)"; b2.addEventListener("click", () => this.opts.onFocus && this.opts.onFocus());
+    const b2 = mk("nebula-btn", bar, "button"); b2.textContent = "Focus"; b2.addEventListener("click", () => this.opts.onFocus && this.opts.onFocus());
     const b3 = mk("nebula-btn", bar, "button"); b3.textContent = "Customize"; b3.addEventListener("click", () => this.panel.classList.toggle("is-open"));
     this._panel(mk);
   }
@@ -267,7 +267,7 @@ export class Constellation {
 
   set(patch) {
     Object.assign(this.s, patch); this.apply(patch);
-    clearTimeout(this._saveT); this._saveT = setTimeout(() => this.opts.onSettings && this.opts.onSettings(Object.assign({}, this.s)), 300);
+    window.clearTimeout(this._saveT); this._saveT = window.setTimeout(() => this.opts.onSettings && this.opts.onSettings(Object.assign({}, this.s)), 300);
   }
 
   apply(patch) {
@@ -344,7 +344,7 @@ export class Constellation {
 
   _loop(now) {
     if (!this.running) return;
-    requestAnimationFrame(this._loop);
+    window.requestAnimationFrame(this._loop);
     if (document.hidden || !this.el.isConnected || this.el.clientWidth < 10 || (this.el.offsetParent === null && !this.opts.force)) return;
     // no frame cap: runs at the monitor's refresh. Only throttles when Obsidian is in the background (optional).
     if (this.s.saveGpu && !document.hasFocus() && now - this._last < 66) return;
@@ -363,17 +363,17 @@ export class Constellation {
     if (this._dirty || this.hover >= 0) { const p = this._pick(); if (p !== this.hover) this._setHover(p); this._dirty = false; }
     const w = this.el.clientWidth, h = this.el.clientHeight, tmp = (this._tmp = this._tmp || new THREE.Vector3()), hv = (this._hv = this._hv || new THREE.Vector3());
     if (this.hover > 0 && this.hover <= this.data.notes.length && this.mouse) {
-      const n = this.data.notes[this.hover - 1]; this._project(this.hover, tmp); this.tip.style.display = "block";
+      const n = this.data.notes[this.hover - 1]; this._project(this.hover, tmp); this.tip.classList.remove("is-hidden");
       this.tip.style.transform = `translate(${(tmp.x * 0.5 + 0.5) * w + 14}px,${(-tmp.y * 0.5 + 0.5) * h - 10}px)`;
       if (this.tip._n !== this.hover) { this.tip.replaceChildren(); const b = document.createElement("b"), sp = document.createElement("span"); b.textContent = n.name; sp.textContent = n.group; this.tip.append(b, sp); this.tip._n = this.hover; }
-    } else this.tip.style.display = "none";
+    } else this.tip.classList.add("is-hidden");
     if (this.s.labels) {
       const zf = Math.min(1, Math.max(0, (this.far * 3.2 - cam.position.distanceTo(c.target)) / (this.far * 1.6)));
       this.groupInfo.forEach((g, i) => {
         const e = this.hubLabels[i]; this._project(g.slot, tmp); const cd = cam.position.distanceTo(hv.fromArray(this.pos, g.slot * 3));
         const show = (i < 9 || cd < 70) && zf > 0.02;
-        if (tmp.z > 1 || tmp.z < -1 || !show) { e.style.opacity = 0; e.style.pointerEvents = "none"; return; }
-        e.style.opacity = (i < 9 ? 1 : Math.min(1, (70 - cd) / 25)) * zf; e.style.pointerEvents = "auto";
+        if (tmp.z > 1 || tmp.z < -1 || !show) { e.classList.add("is-off"); return; }
+        e.style.opacity = (i < 9 ? 1 : Math.min(1, (70 - cd) / 25)) * zf; e.classList.remove("is-off");
         e.style.transform = `translate(${(tmp.x * 0.5 + 0.5) * w}px,${(-tmp.y * 0.5 + 0.5) * h}px) translate(-50%,-135%)`;
       });
     }
@@ -405,7 +405,7 @@ export class Constellation {
   }
 
   destroy() {
-    this.running = false; clearTimeout(this._saveT); this.ro && this.ro.disconnect(); this.controls.dispose();
+    this.running = false; window.clearTimeout(this._saveT); this.ro && this.ro.disconnect(); this.controls.dispose();
     this.scene.traverse((o) => { o.geometry && o.geometry.dispose(); if (o.material) { o.material.map && o.material.map.dispose(); o.material.dispose(); } });
     this.composer.dispose && this.composer.dispose(); this.renderer.dispose(); this.root.remove();
   }
