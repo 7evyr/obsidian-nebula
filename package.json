@@ -1,0 +1,14 @@
+{
+  "name": "obsidian-nebula",
+  "version": "0.1.0",
+  "description": "A glowing 3D constellation view of your Obsidian vault.",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "esbuild src/main.js --bundle --format=cjs --platform=browser --target=es2020 --minify --external:obsidian --outfile=main.js --log-level=warning"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "three": "0.185.1"
+  }
+}
