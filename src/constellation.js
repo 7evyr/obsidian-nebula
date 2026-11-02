@@ -169,7 +169,7 @@ export class Constellation {
     const dust = new Float32Array(1800 * 3), R3 = rng(11);
     for (let i = 0; i < 1800; i++) { const rr = acc * 0.7 + R3() * acc * 2.6, a = R3() * 6.283, b = Math.acos(2 * R3() - 1); dust.set([rr * Math.sin(b) * Math.cos(a), rr * Math.cos(b), rr * Math.sin(b) * Math.sin(a)], i * 3); }
     const dg = new THREE.BufferGeometry(); dg.setAttribute("position", new THREE.BufferAttribute(dust, 3));
-    this.dust = new THREE.Points(dg, new THREE.PointsMaterial({ color: 0x9a9aa4, size: 0.9, sizeAttenuation: true, transparent: true, opacity: 0.35, depthWrite: false }));
+    this.dust = new THREE.Points(dg, new THREE.PointsMaterial({ map: this._dotTex(), color: 0x9a9aa4, size: 0.9, sizeAttenuation: true, transparent: true, opacity: 0.35, depthWrite: false }));
     scene.add(this.dust);
 
     // post: bloom
