@@ -1,6 +1,6 @@
 {
   "name": "obsidian-nebula",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A glowing 3D constellation view of your Obsidian vault.",
   "private": true,
   "license": "MIT",
