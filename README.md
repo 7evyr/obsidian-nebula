@@ -4,7 +4,7 @@ A glowing 3D constellation view of your Obsidian vault.
 
 ![Nebula](assets/nebula.png)
 
-Every note is a star. Each top-level folder gets its own tilted orbit ring around a central hub, and every link between notes is drawn as a line of light, with beads of light running along it.
+Every note is a star. A living star burns at the centre, each top-level folder gets its own tilted orbit ring around it inside faint nebula gas, and every link between notes is drawn as a line of light, with beads of light running along it.
 
 ## Features
 
@@ -12,7 +12,7 @@ Every note is a star. Each top-level folder gets its own tilted orbit ring aroun
 - Click a star to open that note in a split pane. Hover to see its name and folder.
 - Click a folder label to fly to that ring.
 - Focus mode (`F`) hides the sidebars so the view fills the window. `Esc` leaves it.
-- Customize panel: color, glow, node size, link and ring brightness, light beads, spin, comets, pulse, background stars, folder names, motion, and render quality.
+- Customize panel: color, glow, node size, link and ring brightness, light beads, spin, comets, pulse, twinkling background stars, nebula clouds, folder names, motion, and render quality.
 - The view updates itself when notes or links change.
 - The ribbon's orbit button switches between Nebula and the normal graph view.
 
