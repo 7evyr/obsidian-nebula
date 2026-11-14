@@ -51,41 +51,42 @@ const POINT_FS = `
     gl_FragColor = vec4(col * vFade * (0.7 + vBoost * 0.8), halo * vFade * 0.8);
   }`;
 
-// The hub, modelled on JWST's alignment star (2MASS J17554042+6551277): no visible disc, a tiny white-hot core,
-// six long tapering diffraction spikes from the hexagonal mirror (vertical and +-30 degrees), two faint short
-// horizontal strut spikes, a hexagonal petal burst and a soft halo. Spikes fade from white to the accent colour and
-// carry faint interference beads that creep outward. The plane is billboarded so spikes stay fixed on screen.
+// The hub star, drawn the way a camera actually records a very bright star: a tiny white-hot point, smooth glare
+// falling off as 1/r^2, a ciliary corona of hundreds of hair-thin streaks that shimmer (the "temporal glare" seen in
+// real photos of the sun and bright stars), a faint chromatic halo ring, and only short, soft diffraction spikes.
+// Billboarded, so the streaks stay fixed on screen like they would in a lens.
 const STAR_VS = `varying vec2 vUv; void main() { vUv = uv * 2.0 - 1.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 const STAR_FS = `
   uniform vec3 uColor; uniform float uTime; varying vec2 vUv;
-  // one diffraction spike along unit direction d; returns intensity and how far along it the pixel is
-  vec2 spike(vec2 p, vec2 d, float len, float width) {
+  float h1(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+  // value noise around the circle: x in [0,1), N cells, wraps seamlessly
+  float ring(float x, float N, float seed) {
+    float f = x * N, i = floor(f), t = fract(f); t = t * t * (3.0 - 2.0 * t);
+    return mix(h1(mod(i, N) + seed), h1(mod(i + 1.0, N) + seed), t);
+  }
+  float spike(vec2 p, vec2 d, float len, float width) {
     float along = abs(dot(p, d)), across = abs(p.x * d.y - p.y * d.x);
-    float w = width * (1.0 + along * 1.5);                                     // spikes widen slightly with distance
-    float core = exp(-across / w) ;
-    float fall = pow(1.0 / (1.0 + along / len), 2.2) * smoothstep(1.0, 0.55, along);
-    float beads = 0.86 + 0.14 * sin(along * 260.0 - uTime * 1.6);              // interference fringes
-    return vec2(core * fall * beads, along);
+    return exp(-across / (width * (1.0 + along * 6.0))) * exp(-along / len);
   }
   void main() {
-    vec2 p = vUv; float r = length(p), a = atan(p.y, p.x);
-    vec3 white = vec3(1.0), tint = mix(uColor, white, 0.25);
-    float breathe = 1.0 + 0.04 * sin(uTime * 0.9);
-    // core: hot gaussian plus long Lorentzian wings, like a real point spread function
-    float core = exp(-r * r / 0.00004) * 3.0 + 0.004 / (0.004 + r * r * 90.0) * 0.5;
-    float halo = exp(-r * 16.0) * 0.07 + exp(-r * 5.0) * 0.012;
-    // hexagonal petal burst right at the core (the segmented mirror's PSF)
-    float petals = pow(abs(cos(a * 3.0)), 18.0) * exp(-r * 70.0) * 0.3 + pow(abs(cos(a * 3.0 + 0.5236)), 24.0) * exp(-r * 110.0) * 0.15;
-    vec3 col = white * core + tint * (halo + petals);
-    const float c30 = 0.8660254;
-    vec2 dirs[3]; dirs[0] = vec2(0.0, 1.0); dirs[1] = vec2(c30, 0.5); dirs[2] = vec2(c30, -0.5);
-    for (int i = 0; i < 3; i++) {
-      vec2 s = spike(p, dirs[i], 0.16 * breathe, 0.0008);
-      col += mix(white, tint, smoothstep(0.02, 0.35, s.y)) * s.x * 0.85;
-    }
-    vec2 h = spike(p, vec2(1.0, 0.0), 0.05, 0.0006);                          // short strut spikes
-    col += mix(white, tint, smoothstep(0.02, 0.2, h.y)) * h.x * 0.4 * smoothstep(0.6, 0.15, h.y);
-    gl_FragColor = vec4(col, 1.0);
+    vec2 p = vUv; float r = length(p);
+    float x = atan(p.y, p.x) / 6.2831853 + 0.5;
+    vec3 white = vec3(1.0), tint = mix(uColor, white, 0.45);
+    // point + glare
+    float core = exp(-r * r / 0.00003) * 3.2;
+    float glare = 0.0012 / (0.0012 + r * r) * 0.5 + exp(-r * 9.0) * 0.035;
+    // ciliary corona: two layers of fine streaks; the noise drifts so the streaks shimmer instead of sitting still
+    float drift = uTime * 0.035;
+    float fine = pow(ring(x + drift * 0.3, 360.0, 1.0) * ring(x - drift * 0.2, 211.0, 7.0), 3.0) * 3.2;
+    float soft = pow(ring(x - drift * 0.15, 64.0, 3.0), 2.5);
+    float streaks = (fine * exp(-r * 12.0) + soft * exp(-r * 18.0) * 0.5) * smoothstep(0.0, 0.02, r) * (0.85 + 0.15 * sin(uTime * 1.7));
+    // faint chromatic halo ring (red outside, blue inside)
+    vec3 halo = vec3(exp(-pow((r - 0.135) / 0.012, 2.0)), exp(-pow((r - 0.128) / 0.012, 2.0)), exp(-pow((r - 0.121) / 0.012, 2.0))) * 0.035;
+    // short soft diffraction spikes (4 main, 2 faint diagonals)
+    float sp = spike(p, vec2(0.0, 1.0), 0.06, 0.0012) + spike(p, vec2(1.0, 0.0), 0.06, 0.0012)
+             + 0.35 * (spike(p, vec2(0.7071, 0.7071), 0.03, 0.001) + spike(p, vec2(0.7071, -0.7071), 0.03, 0.001));
+    vec3 col = white * core + tint * glare + mix(white, tint, smoothstep(0.0, 0.25, r)) * (streaks * 0.33 + sp * 0.6) + halo;
+    gl_FragColor = vec4(col * smoothstep(1.0, 0.75, r), 1.0);
   }`;
 // Background stars that twinkle, with a little colour temperature spread.
 const DUST_VS = `
@@ -463,7 +464,7 @@ export class Constellation {
     c.update();
     const tm = this.reduced ? 0 : t;
     this.core.quaternion.copy(cam.quaternion);
-    this.core.scale.setScalar(this.coreSize * 30 * (1 + (this.s.pulse && !this.reduced ? Math.sin(t * 1.3) * 0.012 : 0)));
+    this.core.scale.setScalar(this.coreSize * 16 * (1 + (this.s.pulse && !this.reduced ? Math.sin(t * 1.3) * 0.012 : 0)));
     this.starU.uTime.value = tm; this.dustU.uTime.value = tm;
     if (!this.reduced) for (const cl of this.clouds) cl.material.rotation += cl.userData.spin * dt / 1000;
     if (this._dirty || this.hover >= 0) { const p = this._pick(); if (p !== this.hover) this._setHover(p); this._dirty = false; }
