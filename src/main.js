@@ -1,10 +1,15 @@
-import { Plugin, ItemView } from "obsidian";
+import { Plugin, ItemView, Scope } from "obsidian";
 import { Constellation } from "./constellation.js";
 
 const VIEW = "nebula";
 
 class NebulaView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
+  constructor(leaf, plugin) {
+    super(leaf); this.plugin = plugin;
+    // Obsidian 1.15 stopped giving every view its own keymap scope (view.scope is now undefined by default).
+    // The workspace still routes keys to view.scope when it exists, so create one for the F / Esc hotkeys.
+    if (!this.scope) this.scope = new Scope(this.app.scope);
+  }
   getViewType() { return VIEW; }
   getDisplayText() { return "Nebula"; }
   getIcon() { return "orbit"; }
@@ -79,5 +84,7 @@ export default class Nebula extends Plugin {
     else { if (this._ls) ws.leftSplit.expand(); if (this._rs) ws.rightSplit.expand(); }
   }
   // Leaves are left in place on unload (Obsidian guideline) so the tab comes back where the user put it after an update.
-  onunload() { document.body.classList.remove("nebula-focus"); }
+  // three.js stamps window.__THREE__ on import and warns "Multiple instances" if it is already set,
+  // which happens every time the plugin is disabled and enabled again (or updated). Clear it on the way out.
+  onunload() { document.body.classList.remove("nebula-focus"); delete window.__THREE__; }
 }
