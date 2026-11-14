@@ -51,36 +51,41 @@ const POINT_FS = `
     gl_FragColor = vec4(col * vFade * (0.7 + vBoost * 0.8), halo * vFade * 0.8);
   }`;
 
-// The hub: a billboarded star. White-hot granulated surface, a corona whose streamers drift, and diffraction spikes.
-const NOISE = `
-  float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-  float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
-  float fbm(vec2 p) { float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; } return v; }`;
+// The hub, modelled on JWST's alignment star (2MASS J17554042+6551277): no visible disc, a tiny white-hot core,
+// six long tapering diffraction spikes from the hexagonal mirror (vertical and +-30 degrees), two faint short
+// horizontal strut spikes, a hexagonal petal burst and a soft halo. Spikes fade from white to the accent colour and
+// carry faint interference beads that creep outward. The plane is billboarded so spikes stay fixed on screen.
 const STAR_VS = `varying vec2 vUv; void main() { vUv = uv * 2.0 - 1.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
 const STAR_FS = `
-  uniform vec3 uColor; uniform float uTime; varying vec2 vUv;${NOISE}
+  uniform vec3 uColor; uniform float uTime; varying vec2 vUv;
+  // one diffraction spike along unit direction d; returns intensity and how far along it the pixel is
+  vec2 spike(vec2 p, vec2 d, float len, float width) {
+    float along = abs(dot(p, d)), across = abs(p.x * d.y - p.y * d.x);
+    float w = width * (1.0 + along * 1.5);                                     // spikes widen slightly with distance
+    float core = exp(-across / w) ;
+    float fall = pow(1.0 / (1.0 + along / len), 2.2) * smoothstep(1.0, 0.55, along);
+    float beads = 0.86 + 0.14 * sin(along * 260.0 - uTime * 1.6);              // interference fringes
+    return vec2(core * fall * beads, along);
+  }
   void main() {
-    vec2 p = vUv; float r = length(p); vec2 dir = p / max(r, 1e-4);
-    const float R = 0.15;
-    float disc = smoothstep(R, R * 0.9, r);
-    float limb = sqrt(max(0.0, 1.0 - (r * r) / (R * R)));                       // limb darkening
-    float gran = fbm(p * 34.0 + vec2(uTime * 0.12, -uTime * 0.09));
-    vec3 hot = mix(vec3(1.0), uColor, 0.22);
-    float cells = smoothstep(0.35, 0.75, gran);
-    vec3 surf = mix(uColor * 0.55, mix(hot, vec3(1.0), 0.5) * 0.62, limb) * (0.55 + 0.75 * cells);   // kept under 1 so bloom does not flatten it
-    float stream = fbm(dir * 3.2 + vec2(uTime * 0.05, -uTime * 0.04));           // angular streamers, no atan seam
-    float swirl = fbm(p * 5.0 - dir * uTime * 0.25);
-    float wisps = pow(stream * swirl * 2.2, 2.0);
-    float corona = exp(-max(r - R, 0.0) * 10.0) * (0.12 + wisps) * smoothstep(R * 0.85, R, r);
-    float glow = exp(-r * 7.0) * 0.28;
-    float sx = exp(-abs(p.y) * 160.0) * exp(-abs(p.x) * 3.0), sy = exp(-abs(p.x) * 160.0) * exp(-abs(p.y) * 3.0);
-    vec2 q = mat2(0.7071, -0.7071, 0.7071, 0.7071) * p;
-    float sd = (exp(-abs(q.y) * 220.0) * exp(-abs(q.x) * 6.5) + exp(-abs(q.x) * 220.0) * exp(-abs(q.y) * 6.5)) * 0.35;
-    float spikes = (sx + sy + sd) * (0.45 + 0.1 * sin(uTime * 0.7));
-    vec3 col = surf * disc + uColor * (corona * 0.9 + glow) * (1.0 - disc) + mix(uColor, vec3(1.0), 0.6) * spikes;
-    float edge = smoothstep(1.0, 0.7, r);
-    gl_FragColor = vec4(col * edge, 1.0);
+    vec2 p = vUv; float r = length(p), a = atan(p.y, p.x);
+    vec3 white = vec3(1.0), tint = mix(uColor, white, 0.25);
+    float breathe = 1.0 + 0.04 * sin(uTime * 0.9);
+    // core: hot gaussian plus long Lorentzian wings, like a real point spread function
+    float core = exp(-r * r / 0.00004) * 3.0 + 0.004 / (0.004 + r * r * 90.0) * 0.5;
+    float halo = exp(-r * 16.0) * 0.07 + exp(-r * 5.0) * 0.012;
+    // hexagonal petal burst right at the core (the segmented mirror's PSF)
+    float petals = pow(abs(cos(a * 3.0)), 18.0) * exp(-r * 70.0) * 0.3 + pow(abs(cos(a * 3.0 + 0.5236)), 24.0) * exp(-r * 110.0) * 0.15;
+    vec3 col = white * core + tint * (halo + petals);
+    const float c30 = 0.8660254;
+    vec2 dirs[3]; dirs[0] = vec2(0.0, 1.0); dirs[1] = vec2(c30, 0.5); dirs[2] = vec2(c30, -0.5);
+    for (int i = 0; i < 3; i++) {
+      vec2 s = spike(p, dirs[i], 0.16 * breathe, 0.0008);
+      col += mix(white, tint, smoothstep(0.02, 0.35, s.y)) * s.x * 0.85;
+    }
+    vec2 h = spike(p, vec2(1.0, 0.0), 0.05, 0.0006);                          // short strut spikes
+    col += mix(white, tint, smoothstep(0.02, 0.2, h.y)) * h.x * 0.4 * smoothstep(0.6, 0.15, h.y);
+    gl_FragColor = vec4(col, 1.0);
   }`;
 // Background stars that twinkle, with a little colour temperature spread.
 const DUST_VS = `
@@ -241,7 +246,7 @@ export class Constellation {
     // nebula gas: a few huge, faint clouds behind the rings, tinted from the accent colour
     this.clouds = []; const Rc = rng(29), cloudTex = [17, 18, 19].map((sd) => this._cloudTex(sd));
     for (let i = 0; i < 7; i++) {
-      const m = new THREE.SpriteMaterial({ map: cloudTex[i % 3], transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.05 + Rc() * 0.05, rotation: Rc() * 6.283 });
+      const m = new THREE.SpriteMaterial({ map: cloudTex[i % 3], transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.04 + Rc() * 0.04, rotation: Rc() * 6.283 });
       const sp = new THREE.Sprite(m), a = (i / 7) * 6.283 + Rc() * 0.6, rr = acc * (1.05 + Rc() * 0.9);
       sp.position.set(Math.cos(a) * rr, (Rc() - 0.5) * acc * 0.9, Math.sin(a) * rr); sp.scale.setScalar(acc * (1.3 + Rc() * 1.1));
       sp.userData = { hue: [0, 0.07, 0.14][i % 3], spin: (Rc() - 0.5) * 0.03 }; sp.renderOrder = -1; scene.add(sp); this.clouds.push(sp);
@@ -295,7 +300,7 @@ export class Constellation {
 
   _cloudColors() {
     const hsl = {}; this.color.getHSL(hsl);
-    this.clouds.forEach((sp) => sp.material.color.setHSL((hsl.h + sp.userData.hue + 1) % 1, hsl.s * 0.7, Math.min(0.4, hsl.l * 0.6 + 0.05)));
+    this.clouds.forEach((sp) => sp.material.color.setHSL((hsl.h + sp.userData.hue + 1) % 1, hsl.s * 0.7, Math.min(0.4, hsl.l * 0.6 + 0.05) * (0.35 + 0.65 * hsl.s))); // grey accents would turn the gas into fog, so dim it
   }
 
   _ui() {
@@ -458,7 +463,7 @@ export class Constellation {
     c.update();
     const tm = this.reduced ? 0 : t;
     this.core.quaternion.copy(cam.quaternion);
-    this.core.scale.setScalar(this.coreSize * 5.2 * (1 + (this.s.pulse && !this.reduced ? Math.sin(t * 1.3) * 0.03 : 0)));
+    this.core.scale.setScalar(this.coreSize * 30 * (1 + (this.s.pulse && !this.reduced ? Math.sin(t * 1.3) * 0.012 : 0)));
     this.starU.uTime.value = tm; this.dustU.uTime.value = tm;
     if (!this.reduced) for (const cl of this.clouds) cl.material.rotation += cl.userData.spin * dt / 1000;
     if (this._dirty || this.hover >= 0) { const p = this._pick(); if (p !== this.hover) this._setHover(p); this._dirty = false; }
