@@ -9,8 +9,10 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 export const DEFAULTS = {
   color: "#2cf27f", glow: 0.75, glowSize: 0.45, nodeSize: 1.15, links: 1.4, rings: 1, beads: 420, beadSpeed: 1, comets: true,
-  spin: 0.3, pulse: true, stars: true, labels: true, quality: "high", saveGpu: true,
+  spin: 0.3, pulse: true, stars: true, labels: true, quality: "high", saveGpu: true, motion: "auto",
 };
+const HINT = "Left drag to spin any way · right drag to move · scroll to zoom · click a note to open it";
+const HINT_STILL = "Your system asks for reduced motion, so Nebula holds still · set Motion to On in Customize to animate it";
 const SWATCHES = [["Green", "#2cf27f"], ["White", "#ffffff"], ["Ice", "#9fdcff"], ["Violet", "#b38cff"], ["Amber", "#ffc46b"]];
 const QUALITY = { fast: 1, high: 1.75, max: 2.5 };
 const MAX_BEADS = 800;
@@ -58,11 +60,26 @@ export class Constellation {
   constructor(el, data, opts = {}) {
     this.el = el; this.opts = opts; this.data = data;
     this.s = Object.assign({}, DEFAULTS, opts.settings || {});
-    this.reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // Use the window that owns the view, so a Nebula tab moved to a popout window keeps animating.
+    this.doc = el.ownerDocument || document; this.win = this.doc.defaultView || window;
+    this.mq = typeof this.win.matchMedia === "function" ? this.win.matchMedia("(prefers-reduced-motion: reduce)") : null;
     this.t0 = performance.now(); this.running = true; this.hover = -1; this._last = 0; this.frames = 0; this.spinPause = 0;
-    this.root = document.createElement("div"); this.root.className = "nebula-root"; el.appendChild(this.root);
+    this.root = this.doc.createElement("div"); this.root.className = "nebula-root"; el.appendChild(this.root);
     this._build(); this._ui(); this._events(); this.apply();
-    this._loop = this._loop.bind(this); window.requestAnimationFrame(this._loop);
+    this._loop = this._loop.bind(this); this.win.requestAnimationFrame(this._loop);
+  }
+
+  // Motion "auto" follows the system's reduced-motion setting (Windows "Animation effects" off, macOS "Reduce motion").
+  // Before 0.1.5 that was the only choice, so on those machines Nebula never spun and there was no way to turn it on.
+  get sysReduced() { return !!(this.mq && this.mq.matches); }
+  get reduced() { const m = this.s.motion; return m === "off" || (m !== "on" && this.sysReduced); }
+
+  /** Camera and panel state, so a rebuild (notes or links changed) does not throw the user back to the fly-in. */
+  getView() { return { pos: this.camera.position.toArray(), target: this.controls.target.toArray(), up: this.camera.up.toArray(), panel: this.panel.classList.contains("is-open") }; }
+  setView(v) {
+    if (!v) return;
+    this.camera.position.fromArray(v.pos); this.controls.target.fromArray(v.target); this.camera.up.fromArray(v.up);
+    this.flying = false; this.panel.classList.toggle("is-open", !!v.panel);
   }
 
   _build() {
@@ -85,8 +102,8 @@ export class Constellation {
     const v = new THREE.Vector3(), eu = new THREE.Euler();
     const deg = new Uint16Array(total);
     for (const [a, b] of this.data.links) { const x = this.index.get(a), y = this.index.get(b); if (x && y) { deg[x]++; deg[y]++; } }
-    this.ringLines = [];
-    const fs = Math.min(2.4, Math.max(0.5, 3.0 / Math.pow(Math.max(N, 50) / 100, 0.3)));
+    this.ringLines = []; this.ringPts = []; // ringPts must exist even for a vault with no notes, or the comet setup below throws
+    const fs =Math.min(2.4, Math.max(0.5, 3.0 / Math.pow(Math.max(N, 50) / 100, 0.3)));
     let acc = 28;
     order.forEach(([name, ids], gi) => {
       const spread = 1.0 + Math.sqrt(ids.length) * 0.42; acc += 5 + spread * 1.1; const radius = acc; acc += spread * 1.1;
@@ -103,7 +120,7 @@ export class Constellation {
       for (let s = 0; s < seg; s++) { const th = (s / seg) * Math.PI * 2; v.set(Math.cos(th) * radius, 0, Math.sin(th) * radius).applyEuler(eu); lp.set([v.x, v.y, v.z], s * 3); }
       const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(lp, 3));
       const ring = new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false }));
-      scene.add(ring); this.ringLines.push(ring); (this.ringPts = this.ringPts || []).push(lp);
+      scene.add(ring); this.ringLines.push(ring); this.ringPts.push(lp);
       this.groupInfo.push({ name, count: ids.length, slot: hubSlot });
     });
     this.pos = pos;
@@ -221,7 +238,7 @@ export class Constellation {
     this.tip = mk("nebula-tip"); this.tip.classList.add("is-hidden");
     mk("nebula-hud").textContent = `${this.data.notes.length.toLocaleString()} notes · ${this.groupInfo.length} rings · ${this.edges.length.toLocaleString()} links`;
     this.fpsEl = mk("nebula-fps");
-    mk("nebula-hint").textContent = "Left drag to spin any way · right drag to move · scroll to zoom · click a note to open it";
+    this.hintEl = mk("nebula-hint"); this.hintEl.textContent = HINT;
     const bar = mk("nebula-bar");
     const b1 = mk("nebula-btn", bar, "button"); b1.textContent = "Reset view"; b1.addEventListener("click", () => this.resetView());
     const b2 = mk("nebula-btn", bar, "button"); b2.textContent = "Focus"; b2.addEventListener("click", () => this.opts.onFocus && this.opts.onFocus());
@@ -259,6 +276,8 @@ export class Constellation {
       (this._inputs = this._inputs || []).push(show);
     };
     toggle("Comets", "comets"); toggle("Pulse", "pulse"); toggle("Stars", "stars"); toggle("Folder names", "labels"); toggle("Save GPU in background", "saveGpu");
+    const mr = row("Motion"), mseg = mk("nebula-seg", mr);
+    this._mBtns = [["auto", "Auto"], ["on", "On"], ["off", "Off"]].map(([m, label]) => { const b = mk("nebula-segb", mseg, "button"); b.textContent = label; b.title = m === "auto" ? "Follow the system's reduced motion setting" : ""; b.addEventListener("click", () => this.set({ motion: m })); return [m, b]; });
     const qr = row("Quality"), seg = mk("nebula-seg", qr);
     this._qBtns = Object.keys(QUALITY).map((q) => { const b = mk("nebula-segb", seg, "button"); b.textContent = q[0].toUpperCase() + q.slice(1); b.addEventListener("click", () => this.set({ quality: q })); return [q, b]; });
     const reset = mk("nebula-btn nebula-reset", p, "button"); reset.textContent = "Reset to default";
@@ -285,6 +304,8 @@ export class Constellation {
     this.dust.visible = !!s.stars; this.comets.forEach((c) => (c.line.visible = !!s.comets && s.rings > 0)); this.labelLayer.style.display = s.labels ? "" : "none";
     if (!patch || "quality" in patch) { this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY[s.quality] || 1.75)); this.resize(); }
     if (this._qBtns) this._qBtns.forEach(([q, b]) => b.classList.toggle("is-on", q === s.quality));
+    if (this._mBtns) this._mBtns.forEach(([m, b]) => b.classList.toggle("is-on", m === (s.motion || "auto")));
+    if (this.hintEl) this.hintEl.textContent = this.reduced && s.motion !== "off" ? HINT_STILL : HINT;
   }
 
   resetView() {
@@ -303,7 +324,17 @@ export class Constellation {
     };
     this._wh = () => { this.spinPause = performance.now() + 3000; this._fly = null; this.flying = false; };
     cv.addEventListener("pointermove", this._mv); cv.addEventListener("pointerleave", this._lv); cv.addEventListener("pointerdown", this._dn); cv.addEventListener("pointerup", this._up); cv.addEventListener("wheel", this._wh, { passive: true });
+    // A drag that never gets its pointerup (alt-tab mid drag, a dialog stealing the pointer) left _down set, and spin
+    // waits for !_down, so the view stopped spinning until Obsidian was restarted. Clear it on cancel too.
+    // TrackballControls only drops the pointer on cancel and stays in its drag state, so the camera kept following the
+    // mouse with no button held. End its drag the same way a pointerup does.
+    this._cn = (e) => {
+      this._down = null;
+      if (e && e.type === "pointercancel" && this.controls._onPointerUp) { try { this.controls._onPointerUp(e); } catch (err) { /* pointer already released */ } }
+    };
+    cv.addEventListener("pointercancel", this._cn); this.win.addEventListener("blur", this._cn);
     cv.addEventListener("contextmenu", (e) => e.preventDefault());
+    this._mqh = () => this.apply({}); if (this.mq && this.mq.addEventListener) this.mq.addEventListener("change", this._mqh);
     this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(this.el);
   }
 
@@ -344,10 +375,10 @@ export class Constellation {
 
   _loop(now) {
     if (!this.running) return;
-    window.requestAnimationFrame(this._loop);
-    if (document.hidden || !this.el.isConnected || this.el.clientWidth < 10 || (this.el.offsetParent === null && !this.opts.force)) return;
+    this.win.requestAnimationFrame(this._loop);
+    if (this.doc.hidden || !this.el.isConnected || this.el.clientWidth < 10 || (this.el.offsetParent === null && !this.opts.force)) return;
     // no frame cap: runs at the monitor's refresh. Only throttles when Obsidian is in the background (optional).
-    if (this.s.saveGpu && !document.hasFocus() && now - this._last < 66) return;
+    if (this.s.saveGpu && !this.doc.hasFocus() && now - this._last < 66) return;
     const dt = Math.min(100, now - (this._last || now)); this._last = now; this.frames++;
     if ((this._fpsT = (this._fpsT || now)) && now - this._fpsT > 500) { this.fpsEl.textContent = Math.round((this.frames - (this._fpsF || 0)) * 1000 / (now - this._fpsT)) + " fps"; this._fpsT = now; this._fpsF = this.frames; }
     const t = (now - this.t0) / 1000; this.uniforms.uTime.value = this.reduced ? 0 : t;
@@ -406,6 +437,7 @@ export class Constellation {
 
   destroy() {
     this.running = false; window.clearTimeout(this._saveT); this.ro && this.ro.disconnect(); this.controls.dispose();
+    this.win.removeEventListener("blur", this._cn); if (this.mq && this.mq.removeEventListener) this.mq.removeEventListener("change", this._mqh);
     this.scene.traverse((o) => { o.geometry && o.geometry.dispose(); if (o.material) { o.material.map && o.material.map.dispose(); o.material.dispose(); } });
     this.composer.dispose && this.composer.dispose(); this.renderer.dispose(); this.root.remove();
   }

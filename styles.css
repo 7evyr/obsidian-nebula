@@ -40,3 +40,6 @@ body.nebula-focus.is-hidden-frameless:not(.is-fullscreen) .nebula-panel { top: c
 .nebula-tog.is-on, .nebula-segb.is-on { background: #fff; color: #000; border-color: #fff; }
 .nebula-seg { display: flex; gap: 6px; }
 .nebula-reset { position: static; margin-top: 12px; width: 100%; }
+.nebula-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; font-family: Inter, system-ui, sans-serif; }
+.nebula-error b { font-size: 15px; font-weight: 650; color: #f4f4f5; }
+.nebula-error span { max-width: 420px; font-size: 13px; line-height: 1.5; color: #8a8a94; }
