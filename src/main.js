@@ -15,7 +15,7 @@ class NebulaView extends ItemView {
   getIcon() { return "orbit"; }
   async onOpen() {
     this.addAction("git-fork", "Back to graph view", () => this.plugin.backToGraph());
-    this.contentEl.empty(); this.contentEl.addClass("nebula-host"); this.build(); this.scope.register([], "f", () => { this.plugin.toggleFocus(); return false; }); this.scope.register([], "Escape", () => { if (document.body.classList.contains("nebula-focus")) this.plugin.toggleFocus(); return false; });
+    this.contentEl.empty(); this.contentEl.addClass("nebula-host"); this.build(); this.scope.register([], "f", () => { this.plugin.toggleFocus(); return false; }); this.scope.register([], "Escape", () => { if (!document.body.classList.contains("nebula-focus")) return true; this.plugin.toggleFocus(); return false; });
     // Obsidian restores this tab at startup before it has resolved the vault's links, so the first build can come up
     // with almost none and every note floats alone on its ring. The "resolved" event does not catch that late resolve,
     // so the plugin checks every 2 s and rebuilds once the counts change and hold still.
@@ -33,7 +33,9 @@ class NebulaView extends ItemView {
   }
   build() {
     this.built = this.shape();
+    const prev = this.c ? this.c.getView() : null;
     if (this.c) this.c.destroy();
+    this.c = null;
     const app = this.app, notes = [], links = [];
     for (const f of app.vault.getMarkdownFiles()) {
       if (f.path.startsWith(".")) continue;
@@ -42,12 +44,23 @@ class NebulaView extends ItemView {
     }
     const rl = app.metadataCache.resolvedLinks;
     for (const a in rl) for (const b in rl[a]) links.push([a, b]);
-    this.c = new Constellation(this.contentEl, { notes, links }, {
-      settings: this.plugin.data.settings,
-      onSettings: (s) => { this.plugin.data.settings = s; this.plugin.saveData(this.plugin.data); },
-      onFocus: () => this.plugin.toggleFocus(),
-      onOpen: (path) => { const f = app.vault.getAbstractFileByPath(path); if (f) app.workspace.getLeaf("split", "vertical").openFile(f); },
-    });
+    try {
+      this.c = new Constellation(this.contentEl, { notes, links }, {
+        settings: this.plugin.data.settings,
+        onSettings: (s) => { this.plugin.data.settings = s; this.plugin.saveData(this.plugin.data); },
+        onFocus: () => this.plugin.toggleFocus(),
+        onOpen: (path) => { const f = app.vault.getAbstractFileByPath(path); if (f) app.workspace.getLeaf("split", "vertical").openFile(f); },
+      });
+    } catch (e) {
+      // Without WebGL (hardware acceleration off, blocklisted GPU, some VMs) three.js throws and the tab used to stay black.
+      console.error("Nebula could not start", e);
+      this.contentEl.empty();
+      const box = this.contentEl.createDiv({ cls: "nebula-error" });
+      box.createEl("b", { text: "Nebula could not start" });
+      box.createEl("span", { text: "It needs WebGL. Turn on Settings → Appearance → Hardware acceleration, restart Obsidian, then run Nebula: Refresh view." });
+      return;
+    }
+    if (prev) this.c.setView(prev);
   }
   async onClose() { if (this.c) this.c.destroy(); this.c = null; }
 }
@@ -60,15 +73,19 @@ export default class Nebula extends Plugin {
     const toggle = () => (this.app.workspace.getLeavesOfType(VIEW).length ? this.backToGraph() : open());
     const open = async () => {
       const ex = this.app.workspace.getLeavesOfType(VIEW)[0];
-      if (ex) { this.app.workspace.revealLeaf(ex); ex.view.build(); return; }
+      if (ex) {
+        // A Nebula tab restored in the background is a deferred placeholder until shown; calling build() on it threw.
+        if (ex.loadIfDeferred) await ex.loadIfDeferred();
+        this.app.workspace.revealLeaf(ex); if (ex.view instanceof NebulaView) ex.view.build(); return;
+      }
       const leaf = this.app.workspace.getLeaf("tab"); await leaf.setViewState({ type: VIEW, active: true }); this.app.workspace.revealLeaf(leaf);
     };
-    this.registerInterval(window.setInterval(() => this.app.workspace.getLeavesOfType(VIEW).forEach((l) => l.view.refresh && l.view.refresh()), 2000));
+    this.registerInterval(window.setInterval(() => this.app.workspace.getLeavesOfType(VIEW).forEach((l) => l.view instanceof NebulaView && l.view.refresh()), 2000));
     this.addRibbonIcon("orbit", "Nebula", toggle);
     this.addCommand({ id: "toggle", name: "Toggle view", callback: toggle });
     this.addCommand({ id: "open", name: "Open view", callback: open });
     this.addCommand({ id: "back", name: "Close and open graph view", callback: () => this.backToGraph() });
-    this.addCommand({ id: "refresh", name: "Refresh view", callback: () => this.app.workspace.getLeavesOfType(VIEW).forEach((l) => l.view.build()) });
+    this.addCommand({ id: "refresh", name: "Refresh view", callback: () => this.app.workspace.getLeavesOfType(VIEW).forEach((l) => l.view instanceof NebulaView && l.view.build()) });
   }
   backToGraph() {
     if (document.body.classList.contains("nebula-focus")) this.toggleFocus();
