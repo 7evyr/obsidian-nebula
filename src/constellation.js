@@ -68,24 +68,36 @@ const STAR_FS = `
     float along = abs(dot(p, d)), across = abs(p.x * d.y - p.y * d.x);
     return exp(-across / (width * (1.0 + along * 6.0))) * exp(-along / len);
   }
+  float h2(vec2 q) { q = mod(q, 1024.0); return fract(sin(dot(q, vec2(12.9898, 78.233))) * 43758.5453); }
+  float n2(vec2 q) { vec2 i = floor(q), f = fract(q); f = f * f * (3.0 - 2.0 * f);
+    float a = h2(i), b = h2(i + vec2(1.0, 0.0)), c = h2(i + vec2(0.0, 1.0)), d = h2(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y); }
   void main() {
     vec2 p = vUv; float r = length(p);
     float x = atan(p.y, p.x) / 6.2831853 + 0.5;
     vec3 white = vec3(1.0), tint = mix(uColor, white, 0.45);
-    // point + glare
-    float core = exp(-r * r / 0.00003) * 3.2;
-    float glare = 0.0012 / (0.0012 + r * r) * 0.5 + exp(-r * 9.0) * 0.035;
-    // ciliary corona: two layers of fine streaks; the noise drifts so the streaks shimmer instead of sitting still
     float drift = uTime * 0.035;
+    // lopsided glow: real glare is never a perfect circle
+    float lop = 0.6 + 0.8 * ring(x + drift * 0.05, 7.0, 5.0) * ring(x - drift * 0.04, 3.0, 9.0);
+    float core = exp(-r * r / 0.00003) * 3.2;
+    float glare = (0.0012 / (0.0012 + r * r) * 0.5 + exp(-r * 9.0) * 0.035) * mix(1.0, lop, smoothstep(0.01, 0.06, r));
+    // every streak gets its own length, and a few rare ones run far, so the outline is jagged instead of round
+    float lenA = mix(0.025, 0.11, pow(ring(x, 97.0, 11.0), 1.6)) + pow(ring(x + drift * 0.1, 41.0, 23.0), 9.0) * 0.45;
+    float lenB = mix(0.02, 0.07, ring(x, 53.0, 31.0));
     float fine = pow(ring(x + drift * 0.3, 360.0, 1.0) * ring(x - drift * 0.2, 211.0, 7.0), 3.0) * 3.2;
+    float hair = pow(ring(x - drift * 0.25, 720.0, 13.0), 10.0) * 2.0;           // single-pixel hairs
     float soft = pow(ring(x - drift * 0.15, 64.0, 3.0), 2.5);
-    float streaks = (fine * exp(-r * 12.0) + soft * exp(-r * 18.0) * 0.5) * smoothstep(0.0, 0.02, r) * (0.85 + 0.15 * sin(uTime * 1.7));
-    // faint chromatic halo ring (red outside, blue inside)
-    vec3 halo = vec3(exp(-pow((r - 0.135) / 0.012, 2.0)), exp(-pow((r - 0.128) / 0.012, 2.0)), exp(-pow((r - 0.121) / 0.012, 2.0))) * 0.035;
-    // short soft diffraction spikes (4 main, 2 faint diagonals)
+    float streaks = (fine * exp(-r / lenA) + hair * exp(-r / (lenA * 1.4)) + soft * exp(-r / lenB) * 0.5)
+                  * smoothstep(0.0, 0.015, r) * (0.85 + 0.15 * sin(uTime * 1.7));
+    // streaks disperse like a prism: bluish near the core, warm toward the tips
+    vec3 spec = mix(vec3(0.75, 0.88, 1.0), vec3(1.0, 0.82, 0.62), smoothstep(0.02, 0.2, r));
+    vec3 scol = mix(spec, tint, 0.45);
+    // diffraction speckle grain close to the core
+    float speck = pow(n2(vec2(x * 1400.0, r * 160.0 - uTime * 0.6)), 7.0) * exp(-r * 20.0) * smoothstep(0.004, 0.02, r) * 0.7;   // polar, so grains stretch along the rays
+    vec3 halo = vec3(exp(-pow((r - 0.135) / 0.012, 2.0)), exp(-pow((r - 0.128) / 0.012, 2.0)), exp(-pow((r - 0.121) / 0.012, 2.0))) * 0.035 * lop;
     float sp = spike(p, vec2(0.0, 1.0), 0.06, 0.0012) + spike(p, vec2(1.0, 0.0), 0.06, 0.0012)
              + 0.35 * (spike(p, vec2(0.7071, 0.7071), 0.03, 0.001) + spike(p, vec2(0.7071, -0.7071), 0.03, 0.001));
-    vec3 col = white * core + tint * glare + mix(white, tint, smoothstep(0.0, 0.25, r)) * (streaks * 0.33 + sp * 0.6) + halo;
+    vec3 col = white * core + tint * glare + scol * streaks * 0.36 + mix(white, tint, smoothstep(0.0, 0.25, r)) * sp * 0.6 + white * speck + halo;
     gl_FragColor = vec4(col * smoothstep(1.0, 0.75, r), 1.0);
   }`;
 // Background stars that twinkle, with a little colour temperature spread.
