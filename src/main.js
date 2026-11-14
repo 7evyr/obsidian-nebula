@@ -1,4 +1,4 @@
-import { Plugin, ItemView, Scope } from "obsidian";
+import { Plugin, ItemView, Scope, Platform } from "obsidian";
 import { Constellation } from "./constellation.js";
 
 const VIEW = "nebula";
@@ -47,9 +47,11 @@ class NebulaView extends ItemView {
     try {
       this.c = new Constellation(this.contentEl, { notes, links }, {
         settings: this.plugin.data.settings,
+        mobile: Platform.isMobile,
         onSettings: (s) => { this.plugin.data.settings = s; this.plugin.saveData(this.plugin.data); },
         onFocus: () => this.plugin.toggleFocus(),
-        onOpen: (path) => { const f = app.vault.getAbstractFileByPath(path); if (f) app.workspace.getLeaf("split", "vertical").openFile(f); },
+        // Phones and tablets have no split panes, so the note opens in its own tab there.
+        onOpen: (path) => { const f = app.vault.getAbstractFileByPath(path); if (f) (Platform.isMobile ? app.workspace.getLeaf("tab") : app.workspace.getLeaf("split", "vertical")).openFile(f); },
       });
     } catch (e) {
       // Without WebGL (hardware acceleration off, blocklisted GPU, some VMs) three.js throws and the tab used to stay black.
@@ -57,10 +59,15 @@ class NebulaView extends ItemView {
       this.contentEl.empty();
       const box = this.contentEl.createDiv({ cls: "nebula-error" });
       box.createEl("b", { text: "Nebula could not start" });
-      box.createEl("span", { text: "It needs WebGL. Turn on Settings → Appearance → Hardware acceleration, restart Obsidian, then run Nebula: Refresh view." });
+      box.createEl("span", { text: Platform.isMobile
+        ? "It needs WebGL, which this device did not provide. Close other apps, restart Obsidian, then run Nebula: Refresh view."
+        : "It needs WebGL. Turn on Settings → Appearance → Hardware acceleration, restart Obsidian, then run Nebula: Refresh view." });
       return;
     }
     if (prev) this.c.setView(prev);
+    // Phones drop the GPU context when Obsidian goes to the background; rebuild when it comes back instead of staying black.
+    const cv = this.c.renderer && this.c.renderer.domElement;
+    if (cv) cv.addEventListener("webglcontextrestored", () => this.build(), { once: true });
   }
   async onClose() { if (this.c) this.c.destroy(); this.c = null; }
 }

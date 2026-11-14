@@ -1,6 +1,6 @@
 /* position: relative so the overlay is measured from the view itself; without it, it anchored to Obsidian's leaf and slid under the tab header */
 .nebula-host { position: relative; padding: 0 !important; overflow: hidden; background: #000; }
-.nebula-root { position: absolute; inset: 0; font-family: Inter, system-ui, sans-serif; }
+.nebula-root { position: absolute; inset: 0; font-family: Inter, system-ui, sans-serif; container-type: size; }
 .nebula-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
 .nebula-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .nebula-label { position: absolute; left: 0; top: 0; text-align: center; pointer-events: auto; cursor: pointer; transition: opacity .3s; will-change: transform; text-shadow: 0 0 12px #000, 0 0 3px #000; }
@@ -43,3 +43,5 @@ body.nebula-focus.is-hidden-frameless:not(.is-fullscreen) .nebula-panel { top: c
 .nebula-error { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px; text-align: center; font-family: Inter, system-ui, sans-serif; }
 .nebula-error b { font-size: 15px; font-weight: 650; color: #f4f4f5; }
 .nebula-error span { max-width: 420px; font-size: 13px; line-height: 1.5; color: #8a8a94; }
+/* Narrow panes and phones: the hint sits above the note count instead of on top of it. */
+@container (max-width: 640px) { .nebula-hint { left: 18px; right: 18px; bottom: 36px; } }

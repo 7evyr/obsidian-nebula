@@ -12,6 +12,7 @@ export const DEFAULTS = {
   spin: 0.3, pulse: true, stars: true, clouds: true, labels: true, quality: "high", saveGpu: true, motion: "auto",
 };
 const HINT = "Left drag to spin any way · right drag to move · scroll to zoom · click a note to open it";
+const HINT_TOUCH = "Drag to spin · pinch to zoom · tap a note to open it";
 const HINT_STILL = "Your system asks for reduced motion, so Nebula holds still · set Motion to On in Customize to animate it";
 const SWATCHES = [["Green", "#2cf27f"], ["White", "#ffffff"], ["Ice", "#9fdcff"], ["Violet", "#b38cff"], ["Amber", "#ffc46b"]];
 const QUALITY = { fast: 1, high: 1.75, max: 2.5 };
@@ -138,6 +139,8 @@ export class Constellation {
 
   // Motion "auto" follows the system's reduced-motion setting (Windows "Animation effects" off, macOS "Reduce motion").
   // Before 0.1.5 that was the only choice, so on those machines Nebula never spun and there was no way to turn it on.
+  // Phones and tablets run the bloom pass on a much smaller GPU, so below Max they render at 1.25x at most.
+  _ratio(q) { const r = Math.min(window.devicePixelRatio || 1, QUALITY[q] || 1.75); return this.opts.mobile && q !== "max" ? Math.min(r, 1.25) : r; }
   get sysReduced() { return !!(this.mq && this.mq.matches); }
   get reduced() { const m = this.s.motion; return m === "off" || (m !== "on" && this.sysReduced); }
 
@@ -152,7 +155,7 @@ export class Constellation {
   _build() {
     const w = Math.max(this.el.clientWidth, 200), h = Math.max(this.el.clientHeight, 200);
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" }));
-    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY[this.s.quality] || 1.75)); r.setSize(w, h); r.setClearColor(0x000000, 1);
+    r.setPixelRatio(this._ratio(this.s.quality)); r.setSize(w, h); r.setClearColor(0x000000, 1);
     r.toneMapping = THREE.NoToneMapping; this.root.appendChild(r.domElement); r.domElement.className = "nebula-canvas";
     const scene = (this.scene = new THREE.Scene());
     const cam = (this.camera = new THREE.PerspectiveCamera(52, w / h, 0.5, 900));
@@ -386,10 +389,10 @@ export class Constellation {
     this.ringLines.forEach((r) => { r.material.opacity = 0.2 * s.rings; r.visible = s.rings > 0; });
     this.beadPts.geometry.setDrawRange(0, Math.min(MAX_BEADS, Math.round(s.beads))); this.beadPts.visible = s.beads > 0;
     this.dust.visible = !!s.stars; this.clouds.forEach((c) => (c.visible = s.clouds !== false)); this.comets.forEach((c) => (c.line.visible = !!s.comets && s.rings > 0)); this.labelLayer.style.display = s.labels ? "" : "none";
-    if (!patch || "quality" in patch) { this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY[s.quality] || 1.75)); this.resize(); }
+    if (!patch || "quality" in patch) { this.renderer.setPixelRatio(this._ratio(s.quality)); this.resize(); }
     if (this._qBtns) this._qBtns.forEach(([q, b]) => b.classList.toggle("is-on", q === s.quality));
     if (this._mBtns) this._mBtns.forEach(([m, b]) => b.classList.toggle("is-on", m === (s.motion || "auto")));
-    if (this.hintEl) this.hintEl.textContent = this.reduced && s.motion !== "off" ? HINT_STILL : HINT;
+    if (this.hintEl) this.hintEl.textContent = this.reduced && s.motion !== "off" ? HINT_STILL : this.opts.mobile ? HINT_TOUCH : HINT;
   }
 
   resetView() {
@@ -401,9 +404,13 @@ export class Constellation {
     const cv = this.renderer.domElement;
     this._mv = (e) => { const r = cv.getBoundingClientRect(); this.mouse = { x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -((e.clientY - r.top) / r.height) * 2 + 1 }; this._dirty = true; };
     this._lv = () => { this.mouse = null; this._dirty = true; };
-    this._dn = (e) => { this._down = [e.clientX, e.clientY]; this.spinPause = performance.now() + 6000; this._fly = null; this.flying = false; };
+    this._ptrs = new Set();
+    this._dn = (e) => { this._ptrs.add(e.pointerId); if (this._ptrs.size > 1) this._multi = true; else this._multi = false; this._mv(e); this._down = [e.clientX, e.clientY]; this.spinPause = performance.now() + 6000; this._fly = null; this.flying = false; };
     this._up = (e) => {
-      const d = this._down; this._down = null; if (!d || e.button !== 0 || Math.hypot(e.clientX - d[0], e.clientY - d[1]) > 5) return;
+      this._ptrs.delete(e.pointerId); const multi = this._multi; if (this._ptrs.size) return; const d = this._down; this._down = null; if (multi) { this._multi = false; return; }
+      // A tap has no hover before it, so pick the star under the finger now.
+      if (e.pointerType === "touch") { const pp = this.raycaster.params.Points, t = pp.threshold; pp.threshold = t * 1.8; const i = this._pick(); pp.threshold = t; if (i !== this.hover) this._setHover(i); }
+      if (!d || e.button !== 0 || Math.hypot(e.clientX - d[0], e.clientY - d[1]) > (e.pointerType === "touch" ? 12 : 5)) return;
       if (this.hover > 0 && this.hover <= this.data.notes.length && this.opts.onOpen) this.opts.onOpen(this.data.notes[this.hover - 1].id, e);
     };
     this._wh = () => { this.spinPause = performance.now() + 3000; this._fly = null; this.flying = false; };
@@ -413,7 +420,7 @@ export class Constellation {
     // TrackballControls only drops the pointer on cancel and stays in its drag state, so the camera kept following the
     // mouse with no button held. End its drag the same way a pointerup does.
     this._cn = (e) => {
-      this._down = null;
+      this._down = null; if (this._ptrs) this._ptrs.clear(); this._multi = false;
       if (e && e.type === "pointercancel" && this.controls._onPointerUp) { try { this.controls._onPointerUp(e); } catch (err) { /* pointer already released */ } }
     };
     cv.addEventListener("pointercancel", this._cn); this.win.addEventListener("blur", this._cn);
