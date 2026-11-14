@@ -9,7 +9,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 
 export const DEFAULTS = {
   color: "#2cf27f", glow: 0.75, glowSize: 0.45, nodeSize: 1.15, links: 1.4, rings: 1, beads: 420, beadSpeed: 1, comets: true,
-  spin: 0.3, pulse: true, stars: true, labels: true, quality: "high", saveGpu: true, motion: "auto",
+  spin: 0.3, pulse: true, stars: true, clouds: true, labels: true, quality: "high", saveGpu: true, motion: "auto",
 };
 const HINT = "Left drag to spin any way · right drag to move · scroll to zoom · click a note to open it";
 const HINT_STILL = "Your system asks for reduced motion, so Nebula holds still · set Motion to On in Customize to animate it";
@@ -49,6 +49,55 @@ const POINT_FS = `
     float core = smoothstep(0.16, 0.0, d);
     vec3 col = uColor * (halo * 0.5) + vec3(1.0) * core * (0.3 + vBoost * 0.7);
     gl_FragColor = vec4(col * vFade * (0.7 + vBoost * 0.8), halo * vFade * 0.8);
+  }`;
+
+// The hub: a billboarded star. White-hot granulated surface, a corona whose streamers drift, and diffraction spikes.
+const NOISE = `
+  float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float noise(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+  float fbm(vec2 p) { float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; } return v; }`;
+const STAR_VS = `varying vec2 vUv; void main() { vUv = uv * 2.0 - 1.0; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`;
+const STAR_FS = `
+  uniform vec3 uColor; uniform float uTime; varying vec2 vUv;${NOISE}
+  void main() {
+    vec2 p = vUv; float r = length(p); vec2 dir = p / max(r, 1e-4);
+    const float R = 0.15;
+    float disc = smoothstep(R, R * 0.9, r);
+    float limb = sqrt(max(0.0, 1.0 - (r * r) / (R * R)));                       // limb darkening
+    float gran = fbm(p * 34.0 + vec2(uTime * 0.12, -uTime * 0.09));
+    vec3 hot = mix(vec3(1.0), uColor, 0.22);
+    float cells = smoothstep(0.35, 0.75, gran);
+    vec3 surf = mix(uColor * 0.55, mix(hot, vec3(1.0), 0.5) * 0.62, limb) * (0.55 + 0.75 * cells);   // kept under 1 so bloom does not flatten it
+    float stream = fbm(dir * 3.2 + vec2(uTime * 0.05, -uTime * 0.04));           // angular streamers, no atan seam
+    float swirl = fbm(p * 5.0 - dir * uTime * 0.25);
+    float wisps = pow(stream * swirl * 2.2, 2.0);
+    float corona = exp(-max(r - R, 0.0) * 10.0) * (0.12 + wisps) * smoothstep(R * 0.85, R, r);
+    float glow = exp(-r * 7.0) * 0.28;
+    float sx = exp(-abs(p.y) * 160.0) * exp(-abs(p.x) * 3.0), sy = exp(-abs(p.x) * 160.0) * exp(-abs(p.y) * 3.0);
+    vec2 q = mat2(0.7071, -0.7071, 0.7071, 0.7071) * p;
+    float sd = (exp(-abs(q.y) * 220.0) * exp(-abs(q.x) * 6.5) + exp(-abs(q.x) * 220.0) * exp(-abs(q.y) * 6.5)) * 0.35;
+    float spikes = (sx + sy + sd) * (0.45 + 0.1 * sin(uTime * 0.7));
+    vec3 col = surf * disc + uColor * (corona * 0.9 + glow) * (1.0 - disc) + mix(uColor, vec3(1.0), 0.6) * spikes;
+    float edge = smoothstep(1.0, 0.7, r);
+    gl_FragColor = vec4(col * edge, 1.0);
+  }`;
+// Background stars that twinkle, with a little colour temperature spread.
+const DUST_VS = `
+  attribute float aSize; attribute float aPhase; attribute float aTint;
+  uniform float uScale; uniform float uTime; varying float vTw; varying float vTint;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vTw = 0.55 + 0.45 * sin(uTime * (0.6 + fract(aPhase * 7.13) * 1.8) + aPhase);
+    vTint = aTint; gl_PointSize = aSize * uScale / -mv.z * (0.8 + 0.35 * vTw); gl_Position = projectionMatrix * mv;
+  }`;
+const DUST_FS = `
+  uniform float uOpacity; varying float vTw; varying float vTint;
+  void main() {
+    float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard;
+    float a = pow(1.0 - d * 2.0, 2.0);
+    vec3 col = mix(vec3(0.72, 0.8, 1.0), vec3(1.0, 0.86, 0.7), vTint);
+    gl_FragColor = vec4(col, a * uOpacity * vTw);
   }`;
 
 export class Constellation {
@@ -167,8 +216,10 @@ export class Constellation {
     this.beadMat = new THREE.PointsMaterial({ map: this._dotTex(), color: 0xffffff, size: 2.2, sizeAttenuation: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false });
     this.beadPts = new THREE.Points(bg, this.beadMat); this.beadPts.frustumCulled = false; scene.add(this.beadPts);
 
-    // core + star dust
-    this.core = this._coreSprite(); scene.add(this.core);
+    // the hub star (billboarded each frame in _loop)
+    this.starU = { uColor: { value: color }, uTime: { value: 0 } };
+    this.core = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({ vertexShader: STAR_VS, fragmentShader: STAR_FS, uniforms: this.starU, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending }));
+    this.core.renderOrder = 10; this.core.frustumCulled = false; scene.add(this.core);
     // comets: a bright head with a fading tail racing round every ring
     this.comets = []; const TL = 34;
     this.ringPts.forEach((lp, i) => {
@@ -176,18 +227,26 @@ export class Constellation {
       const line = new THREE.Line(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })); line.frustumCulled = false;
       scene.add(line); const R = rng(100 + i); this.comets.push({ line, lp, ph: R(), sp: (0.025 + R() * 0.05) * (R() < 0.5 ? -1 : 1), TL });
     });
-    // halos spinning round the core
-    this.halos = [0.95, 1.35, 1.8].map((k, i) => {
-      const seg = 128, a = new Float32Array(seg * 3); for (let s = 0; s < seg; s++) { const th = (s / seg) * Math.PI * 2; a.set([Math.cos(th), Math.sin(th), 0], s * 3); }
-      const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(a, 3));
-      const l = new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.55 - i * 0.12, blending: THREE.AdditiveBlending, depthWrite: false }));
-      l.userData = { k, ax: new THREE.Vector3(Math.sin(i * 2.1), Math.cos(i * 1.3), Math.sin(i * 0.7 + 1)).normalize(), sp: 0.5 + i * 0.35 }; l.rotation.set(i * 0.9, i * 1.7, 0); scene.add(l); return l;
-    });
-    const dust = new Float32Array(1800 * 3), R3 = rng(11);
-    for (let i = 0; i < 1800; i++) { const rr = acc * 0.7 + R3() * acc * 2.6, a = R3() * 6.283, b = Math.acos(2 * R3() - 1); dust.set([rr * Math.sin(b) * Math.cos(a), rr * Math.cos(b), rr * Math.sin(b) * Math.sin(a)], i * 3); }
+    // background stars: twinkle, slight warm/cool spread
+    const DN = 2200, dust = new Float32Array(DN * 3), dSize = new Float32Array(DN), dPhase = new Float32Array(DN), dTint = new Float32Array(DN), R3 = rng(11);
+    for (let i = 0; i < DN; i++) {
+      const rr = acc * 0.7 + R3() * acc * 2.6, a = R3() * 6.283, b = Math.acos(2 * R3() - 1); dust.set([rr * Math.sin(b) * Math.cos(a), rr * Math.cos(b), rr * Math.sin(b) * Math.sin(a)], i * 3);
+      const big = R3(); dSize[i] = 0.55 + big * big * big * 1.9; dPhase[i] = R3() * 6.283; dTint[i] = R3();
+    }
     const dg = new THREE.BufferGeometry(); dg.setAttribute("position", new THREE.BufferAttribute(dust, 3));
-    this.dust = new THREE.Points(dg, new THREE.PointsMaterial({ map: this._dotTex(), color: 0x9a9aa4, size: 0.9, sizeAttenuation: true, transparent: true, opacity: 0.35, depthWrite: false }));
-    scene.add(this.dust);
+    dg.setAttribute("aSize", new THREE.BufferAttribute(dSize, 1)); dg.setAttribute("aPhase", new THREE.BufferAttribute(dPhase, 1)); dg.setAttribute("aTint", new THREE.BufferAttribute(dTint, 1));
+    this.dustU = { uScale: { value: h * 0.5 }, uTime: { value: 0 }, uOpacity: { value: 0.55 } };
+    this.dust = new THREE.Points(dg, new THREE.ShaderMaterial({ vertexShader: DUST_VS, fragmentShader: DUST_FS, uniforms: this.dustU, transparent: true, depthWrite: false }));
+    this.dust.frustumCulled = false; scene.add(this.dust);
+    // nebula gas: a few huge, faint clouds behind the rings, tinted from the accent colour
+    this.clouds = []; const Rc = rng(29), cloudTex = [17, 18, 19].map((sd) => this._cloudTex(sd));
+    for (let i = 0; i < 7; i++) {
+      const m = new THREE.SpriteMaterial({ map: cloudTex[i % 3], transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.05 + Rc() * 0.05, rotation: Rc() * 6.283 });
+      const sp = new THREE.Sprite(m), a = (i / 7) * 6.283 + Rc() * 0.6, rr = acc * (1.05 + Rc() * 0.9);
+      sp.position.set(Math.cos(a) * rr, (Rc() - 0.5) * acc * 0.9, Math.sin(a) * rr); sp.scale.setScalar(acc * (1.3 + Rc() * 1.1));
+      sp.userData = { hue: [0, 0.07, 0.14][i % 3], spin: (Rc() - 0.5) * 0.03 }; sp.renderOrder = -1; scene.add(sp); this.clouds.push(sp);
+    }
+    this._cloudColors();
 
     // post: bloom
     const comp = (this.composer = new EffectComposer(r));
@@ -217,18 +276,26 @@ export class Constellation {
     this.linkGeo.attributes.color.needsUpdate = true;
   }
 
-  // plain glowing rounded square, no logo
-  _coreSprite() {
-    const c = document.createElement("canvas"); c.width = c.height = 256; const g = c.getContext("2d");
-    const rgb = this.color, rgba = (a) => `rgba(${Math.round(rgb.r * 255)},${Math.round(rgb.g * 255)},${Math.round(rgb.b * 255)},${a})`;
-    const rr = (x, y, w, h, r) => { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); };
-    const glow = g.createRadialGradient(128, 128, 40, 128, 128, 128); glow.addColorStop(0, rgba(0.5)); glow.addColorStop(1, rgba(0)); g.fillStyle = glow; g.fillRect(0, 0, 256, 256);
-    rr(56, 56, 144, 144, 38); const fill = g.createLinearGradient(0, 56, 0, 200); fill.addColorStop(0, rgba(0.98)); fill.addColorStop(1, rgba(0.72)); g.fillStyle = fill; g.fill();
-    g.lineWidth = 3; g.strokeStyle = "rgba(255,255,255,.55)"; g.stroke();
-    const shine = g.createLinearGradient(0, 60, 0, 130); shine.addColorStop(0, "rgba(255,255,255,.35)"); shine.addColorStop(1, "rgba(255,255,255,0)");
-    rr(64, 62, 128, 64, 30); g.fillStyle = shine; g.fill();
-    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, opacity: 0.95, depthTest: false })); s.renderOrder = 10; return s;
+  // soft cloud texture: value-noise fbm, wispy threshold, round falloff so sprite edges never show
+  _cloudTex(seed) {
+    const S = 192, c = this.doc.createElement("canvas"); c.width = c.height = S; const g = c.getContext("2d"), img = g.createImageData(S, S), R = rng(seed);
+    const G = 32, grid = Array.from({ length: G * G }, R), at = (i, j) => grid[(((j % G) + G) % G) * G + (((i % G) + G) % G)];
+    const vn = (x, y) => { const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+      return (at(xi, yi) * (1 - u) + at(xi + 1, yi) * u) * (1 - v) + (at(xi, yi + 1) * (1 - u) + at(xi + 1, yi + 1) * u) * v; };
+    const ox = R() * 100, oy = R() * 100;
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      let n = 0, a = 0.5, f = 3.2 / S;
+      for (let o = 0; o < 5; o++) { n += a * vn(ox + x * f, oy + y * f); f *= 2.05; a *= 0.5; }
+      const dx = x / S - 0.5, dy = y / S - 0.5, d = Math.sqrt(dx * dx + dy * dy) * 2, fall = Math.pow(Math.max(0, 1 - d), 1.8);
+      const al = Math.min(1, Math.max(0, (n - 0.33) * 2.4)) * fall, k = (y * S + x) * 4;
+      img.data[k] = img.data[k + 1] = img.data[k + 2] = 255; img.data[k + 3] = al * 255;
+    }
+    g.putImageData(img, 0, 0); return new THREE.CanvasTexture(c);
+  }
+
+  _cloudColors() {
+    const hsl = {}; this.color.getHSL(hsl);
+    this.clouds.forEach((sp) => sp.material.color.setHSL((hsl.h + sp.userData.hue + 1) % 1, hsl.s * 0.7, Math.min(0.4, hsl.l * 0.6 + 0.05)));
   }
 
   _ui() {
@@ -275,7 +342,7 @@ export class Constellation {
       b.addEventListener("click", () => { this.set({ [key]: !this.s[key] }); show(); }); show();
       (this._inputs = this._inputs || []).push(show);
     };
-    toggle("Comets", "comets"); toggle("Pulse", "pulse"); toggle("Stars", "stars"); toggle("Folder names", "labels"); toggle("Save GPU in background", "saveGpu");
+    toggle("Comets", "comets"); toggle("Pulse", "pulse"); toggle("Stars", "stars"); toggle("Nebula clouds", "clouds"); toggle("Folder names", "labels"); toggle("Save GPU in background", "saveGpu");
     const mr = row("Motion"), mseg = mk("nebula-seg", mr);
     this._mBtns = [["auto", "Auto"], ["on", "On"], ["off", "Off"]].map(([m, label]) => { const b = mk("nebula-segb", mseg, "button"); b.textContent = label; b.title = m === "auto" ? "Follow the system's reduced motion setting" : ""; b.addEventListener("click", () => this.set({ motion: m })); return [m, b]; });
     const qr = row("Quality"), seg = mk("nebula-seg", qr);
@@ -292,8 +359,7 @@ export class Constellation {
   apply(patch) {
     const s = this.s;
     if (!patch || "color" in patch) {
-      this.color.set(s.color); this.ringLines.forEach((r) => r.material.color.copy(this.color)); this.halos.forEach((l) => l.material.color.copy(this.color)); this._linkColors();
-      const old = this.core; this.core = this._coreSprite(); this.scene.add(this.core); if (old) { this.scene.remove(old); old.material.map.dispose(); old.material.dispose(); }
+      this.color.set(s.color); this.ringLines.forEach((r) => r.material.color.copy(this.color)); this._linkColors(); this._cloudColors();
       this.root.style.setProperty("--nebula-color", s.color); if (this.picker) this.picker.value = s.color;
     }
     this.bloom.strength = s.glow; this.bloom.radius = s.glowSize;
@@ -301,7 +367,7 @@ export class Constellation {
     this.linkMat.opacity = 0.1 * s.links; this.links.visible = s.links > 0;
     this.ringLines.forEach((r) => { r.material.opacity = 0.2 * s.rings; r.visible = s.rings > 0; });
     this.beadPts.geometry.setDrawRange(0, Math.min(MAX_BEADS, Math.round(s.beads))); this.beadPts.visible = s.beads > 0;
-    this.dust.visible = !!s.stars; this.comets.forEach((c) => (c.line.visible = !!s.comets && s.rings > 0)); this.labelLayer.style.display = s.labels ? "" : "none";
+    this.dust.visible = !!s.stars; this.clouds.forEach((c) => (c.visible = s.clouds !== false)); this.comets.forEach((c) => (c.line.visible = !!s.comets && s.rings > 0)); this.labelLayer.style.display = s.labels ? "" : "none";
     if (!patch || "quality" in patch) { this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, QUALITY[s.quality] || 1.75)); this.resize(); }
     if (this._qBtns) this._qBtns.forEach(([q, b]) => b.classList.toggle("is-on", q === s.quality));
     if (this._mBtns) this._mBtns.forEach(([m, b]) => b.classList.toggle("is-on", m === (s.motion || "auto")));
@@ -341,7 +407,7 @@ export class Constellation {
   resize() {
     const w = Math.max(this.el.clientWidth, 100), h = Math.max(this.el.clientHeight, 100);
     this.renderer.setSize(w, h); this.composer.setSize(w, h); this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
-    this.uniforms.uScale.value = h * 0.62; this.controls.handleResize && this.controls.handleResize();
+    this.uniforms.uScale.value = h * 0.62; this.dustU.uScale.value = h * 0.5; this.controls.handleResize && this.controls.handleResize();
   }
 
   focusSlot(slot) {
@@ -390,7 +456,11 @@ export class Constellation {
       q.setFromAxisAngle(cam.up, this.s.spin * 0.12 * (dt / 1000)); off.copy(cam.position).sub(c.target).applyQuaternion(q); cam.position.copy(c.target).add(off);
     }
     c.update();
-    this.core.scale.setScalar(this.coreSize * (1 + (this.s.pulse && !this.reduced ? Math.sin(t * 1.3) * 0.04 : 0)));
+    const tm = this.reduced ? 0 : t;
+    this.core.quaternion.copy(cam.quaternion);
+    this.core.scale.setScalar(this.coreSize * 5.2 * (1 + (this.s.pulse && !this.reduced ? Math.sin(t * 1.3) * 0.03 : 0)));
+    this.starU.uTime.value = tm; this.dustU.uTime.value = tm;
+    if (!this.reduced) for (const cl of this.clouds) cl.material.rotation += cl.userData.spin * dt / 1000;
     if (this._dirty || this.hover >= 0) { const p = this._pick(); if (p !== this.hover) this._setHover(p); this._dirty = false; }
     const w = this.el.clientWidth, h = this.el.clientHeight, tmp = (this._tmp = this._tmp || new THREE.Vector3()), hv = (this._hv = this._hv || new THREE.Vector3());
     if (this.hover > 0 && this.hover <= this.data.notes.length && this.mouse) {
@@ -419,8 +489,6 @@ export class Constellation {
       this.beadPts.geometry.attributes.position.needsUpdate = true;
     }
     if (!this.reduced) {
-      const k = this.coreSize * 0.5;
-      this.halos.forEach((l) => { l.scale.setScalar(k * l.userData.k); l.rotateOnAxis(l.userData.ax, l.userData.sp * dt / 1000); });
       if (this.s.comets && this.s.rings > 0) for (const cm of this.comets) {
         cm.ph = (cm.ph + cm.sp * dt / 1000 + 1) % 1; const seg = cm.lp.length / 3, head = Math.floor(cm.ph * seg), dir = cm.sp > 0 ? 1 : -1;
         const P = cm.line.geometry.attributes.position.array, C = cm.line.geometry.attributes.color.array, col = this.color, br = Math.min(2, 0.6 + this.s.rings * 0.7);
@@ -431,7 +499,7 @@ export class Constellation {
         }
         cm.line.geometry.attributes.position.needsUpdate = true; cm.line.geometry.attributes.color.needsUpdate = true;
       }
-    } else this.halos.forEach((l) => l.scale.setScalar(this.coreSize * 0.5 * l.userData.k));
+    }
     this.composer.render();
   }
 
