@@ -13,6 +13,12 @@
 .nebula-tip.is-hidden { display: none; }
 .nebula-label.is-off { opacity: 0 !important; pointer-events: none; }
 .nebula-hud { position: absolute; left: 18px; bottom: 16px; font-size: 12px; font-weight: 500; color: #6e6e78; pointer-events: none; }
+.nebula-legend { position: absolute; left: 18px; top: 40px; display: flex; flex-direction: column; gap: 5px; max-width: 200px; max-height: calc(100% - 120px); overflow: auto; pointer-events: none; }
+.nebula-legend.is-hidden { display: none; }
+.nebula-leg-item { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 500; color: #c4c4cc; text-shadow: 0 0 10px #000, 0 0 3px #000; }
+.nebula-leg-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; box-shadow: 0 0 6px currentColor; }
+.nebula-leg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nebula-leg-more { color: #6e6e78; padding-left: 16px; }
 .nebula-hint { position: absolute; right: 18px; bottom: 16px; font-size: 12px; font-weight: 500; color: #45454e; pointer-events: none; }
 .nebula-btn { position: absolute; right: 16px; top: 14px; padding: 6px 15px; border-radius: 999px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.16); color: #e4e4e8; font: 600 12px Inter, system-ui, sans-serif; cursor: pointer; backdrop-filter: blur(12px); transition: background .2s, transform .2s; }
 .nebula-btn:hover { background: rgba(255,255,255,.14); transform: translateY(-1px); }

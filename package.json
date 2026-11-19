@@ -5,10 +5,14 @@
   "private": true,
   "license": "MIT",
   "scripts": {
-    "build": "esbuild src/main.js --bundle --format=cjs --platform=browser --target=es2020 --minify --external:obsidian --outfile=main.js --log-level=warning"
+    "build": "esbuild src/main.js --bundle --format=cjs --platform=browser --target=es2020 --minify --external:obsidian --outfile=main.js --log-level=warning",
+    "test": "node --test"
   },
   "devDependencies": {
     "esbuild": "0.25.12",
     "three": "0.185.1"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

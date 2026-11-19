@@ -6,10 +6,11 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { tagColorMap, noteColor } from "./tagcolors.js";
 
 export const DEFAULTS = {
   color: "#2cf27f", glow: 0.75, glowSize: 0.45, nodeSize: 1.15, links: 1.4, rings: 1, beads: 420, beadSpeed: 1, comets: true,
-  spin: 0.3, pulse: true, stars: true, clouds: true, labels: true, quality: "high", saveGpu: true, motion: "auto",
+  spin: 0.3, pulse: true, stars: true, clouds: true, labels: true, colorByTag: false, quality: "high", saveGpu: true, motion: "auto",
 };
 const HINT = "Left drag to spin any way · right drag to move · scroll to zoom · click a note to open it";
 const HINT_TOUCH = "Drag to spin · pinch to zoom · tap a note to open it";
@@ -30,25 +31,26 @@ function rng(seed) {
 }
 function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 
+// aColor is per node: the accent colour for every node by default, or its tag's hue when "Colour by tag" is on.
 const POINT_VS = `
-  attribute float aSize; attribute float aBoost; attribute float aPhase;
+  attribute float aSize; attribute float aBoost; attribute float aPhase; attribute vec3 aColor;
   uniform float uScale; uniform float uTime; uniform float uSizeMul; uniform float uPulse;
-  varying float vBoost; varying float vFade;
+  varying float vBoost; varying float vFade; varying vec3 vColor;
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     float pulse = 1.0 + uPulse * 0.18 * sin(uTime * 1.6 + aPhase);
     gl_PointSize = aSize * uSizeMul * pulse * (1.0 + aBoost * 0.9) * uScale / -mv.z;
-    vBoost = aBoost; vFade = clamp(1.25 - (-mv.z) / 900.0, 0.45, 1.0);
+    vBoost = aBoost; vFade = clamp(1.25 - (-mv.z) / 900.0, 0.45, 1.0); vColor = aColor;
     gl_Position = projectionMatrix * mv;
   }`;
 const POINT_FS = `
-  uniform vec3 uColor; varying float vBoost; varying float vFade;
+  varying float vBoost; varying float vFade; varying vec3 vColor;
   void main() {
     float d = length(gl_PointCoord - 0.5);
     if (d > 0.5) discard;
     float halo = pow(1.0 - d * 2.0, 2.2);
     float core = smoothstep(0.16, 0.0, d);
-    vec3 col = uColor * (halo * 0.5) + vec3(1.0) * core * (0.3 + vBoost * 0.7);
+    vec3 col = vColor * (halo * 0.5) + vec3(1.0) * core * (0.3 + vBoost * 0.7);
     gl_FragColor = vec4(col * vFade * (0.7 + vBoost * 0.8), halo * vFade * 0.8);
   }`;
 
@@ -122,7 +124,7 @@ const DUST_FS = `
 export class Constellation {
   /**
    * @param {HTMLElement} el container
-   * @param {{notes:{id:string,name:string,group:string}[], links:[string,string][]}} data
+   * @param {{notes:{id:string,name:string,group:string,tags?:string[]}[], links:[string,string][]}} data
    * @param {{settings?:object, onOpen?:(id:string)=>void, onSettings?:(s:object)=>void, onFocus?:()=>void, force?:boolean}} opts
    */
   constructor(el, data, opts = {}) {
@@ -201,7 +203,12 @@ export class Constellation {
     geo.setAttribute("aSize", new THREE.BufferAttribute(size, 1));
     geo.setAttribute("aPhase", new THREE.BufferAttribute(phase, 1));
     this.boostAttr = new THREE.BufferAttribute(boost, 1); geo.setAttribute("aBoost", this.boostAttr);
-    this.uniforms = { uColor: { value: color }, uScale: { value: h * 0.62 }, uTime: { value: 0 }, uSizeMul: { value: 1 }, uPulse: { value: 1 } };
+    // per-node colour: tag hues for notes, accent for everything else; filled by _nodeColors()
+    this.tagMap = tagColorMap(notes);
+    this.nodeCol = new Float32Array(total * 3);
+    this.nodeColorAttr = new THREE.BufferAttribute(this.nodeCol, 3); geo.setAttribute("aColor", this.nodeColorAttr);
+    this._nodeColors();
+    this.uniforms = { uScale: { value: h * 0.62 }, uTime: { value: 0 }, uSizeMul: { value: 1 }, uPulse: { value: 1 } };
     this.points = new THREE.Points(geo, new THREE.ShaderMaterial({ vertexShader: POINT_VS, fragmentShader: POINT_FS, uniforms: this.uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     this.points.frustumCulled = false; scene.add(this.points);
     this.raycaster = new THREE.Raycaster(); this.raycaster.params.Points.threshold = 0.9;
@@ -297,6 +304,39 @@ export class Constellation {
     this.linkGeo.attributes.color.needsUpdate = true;
   }
 
+  // Fill the per-node colour buffer: accent for every slot, then override note slots with their tag hue when enabled.
+  // Slot 0 is the (invisible) core and slots past the notes are folder hubs, which always keep the accent.
+  _nodeColors() {
+    const ncol = this.nodeCol, total = ncol.length / 3, c = this.color;
+    for (let i = 0; i < total; i++) { ncol[i * 3] = c.r; ncol[i * 3 + 1] = c.g; ncol[i * 3 + 2] = c.b; }
+    if (this.s.colorByTag && this.tagMap && this.tagMap.order.length) {
+      const tmp = this._tagColor || (this._tagColor = new THREE.Color());
+      this.data.notes.forEach((n, i) => {
+        tmp.set(noteColor(n, this.tagMap, this.s.color)); const slot = (i + 1) * 3;
+        ncol[slot] = tmp.r; ncol[slot + 1] = tmp.g; ncol[slot + 2] = tmp.b;
+      });
+    }
+    if (this.nodeColorAttr) this.nodeColorAttr.needsUpdate = true;
+  }
+
+  // The legend maps tag -> colour while "Colour by tag" is on; hidden otherwise.
+  _updateLegend() {
+    if (!this.legend) return;
+    const order = (this.tagMap && this.tagMap.order) || [];
+    const on = !!this.s.colorByTag && order.length > 0;
+    this.legend.classList.toggle("is-hidden", !on);
+    if (!on) { this.legend.replaceChildren(); return; }
+    const MAX = 12, items = [];
+    order.slice(0, MAX).forEach((t) => {
+      const item = document.createElement("div"); item.className = "nebula-leg-item";
+      const dot = document.createElement("span"); dot.className = "nebula-leg-dot"; dot.style.background = this.tagMap.colors.get(t);
+      const name = document.createElement("span"); name.className = "nebula-leg-name"; name.textContent = "#" + t;
+      item.append(dot, name); items.push(item);
+    });
+    if (order.length > MAX) { const more = document.createElement("div"); more.className = "nebula-leg-item nebula-leg-more"; more.textContent = `+${order.length - MAX} more`; items.push(more); }
+    this.legend.replaceChildren(...items);
+  }
+
   // soft cloud texture: value-noise fbm, wispy threshold, round falloff so sprite edges never show
   _cloudTex(seed) {
     const S = 192, c = this.doc.createElement("canvas"); c.width = c.height = S; const g = c.getContext("2d"), img = g.createImageData(S, S), R = rng(seed);
@@ -324,6 +364,7 @@ export class Constellation {
     this.labelLayer = mk("nebula-labels");
     this.hubLabels = this.groupInfo.map((g) => { const e = mk("nebula-label", this.labelLayer); mk("", e, "b").textContent = g.name; mk("", e, "span").textContent = `${g.count} notes`; e.addEventListener("click", () => this.focusSlot(g.slot)); return e; });
     this.tip = mk("nebula-tip"); this.tip.classList.add("is-hidden");
+    this.legend = mk("nebula-legend"); this.legend.classList.add("is-hidden");
     mk("nebula-hud").textContent = `${this.data.notes.length.toLocaleString()} notes · ${this.groupInfo.length} rings · ${this.edges.length.toLocaleString()} links`;
     this.fpsEl = mk("nebula-fps");
     this.hintEl = mk("nebula-hint"); this.hintEl.textContent = HINT;
@@ -363,7 +404,7 @@ export class Constellation {
       b.addEventListener("click", () => { this.set({ [key]: !this.s[key] }); show(); }); show();
       (this._inputs = this._inputs || []).push(show);
     };
-    toggle("Comets", "comets"); toggle("Pulse", "pulse"); toggle("Stars", "stars"); toggle("Nebula clouds", "clouds"); toggle("Folder names", "labels"); toggle("Save GPU in background", "saveGpu");
+    toggle("Colour by tag", "colorByTag"); toggle("Comets", "comets"); toggle("Pulse", "pulse"); toggle("Stars", "stars"); toggle("Nebula clouds", "clouds"); toggle("Folder names", "labels"); toggle("Save GPU in background", "saveGpu");
     const mr = row("Motion"), mseg = mk("nebula-seg", mr);
     this._mBtns = [["auto", "Auto"], ["on", "On"], ["off", "Off"]].map(([m, label]) => { const b = mk("nebula-segb", mseg, "button"); b.textContent = label; b.title = m === "auto" ? "Follow the system's reduced motion setting" : ""; b.addEventListener("click", () => this.set({ motion: m })); return [m, b]; });
     const qr = row("Quality"), seg = mk("nebula-seg", qr);
@@ -383,6 +424,8 @@ export class Constellation {
       this.color.set(s.color); this.ringLines.forEach((r) => r.material.color.copy(this.color)); this._linkColors(); this._cloudColors();
       this.root.style.setProperty("--nebula-color", s.color); if (this.picker) this.picker.value = s.color;
     }
+    // Node colours depend on both the accent and the tag toggle; the legend only on the toggle.
+    if (!patch || "color" in patch || "colorByTag" in patch) { this._nodeColors(); this._updateLegend(); }
     this.bloom.strength = s.glow; this.bloom.radius = s.glowSize;
     this.uniforms.uSizeMul.value = s.nodeSize; this.uniforms.uPulse.value = s.pulse && !this.reduced ? 1 : 0;
     this.linkMat.opacity = 0.1 * s.links; this.links.visible = s.links > 0;
