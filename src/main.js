@@ -1,4 +1,4 @@
-import { Plugin, ItemView, Scope, Platform } from "obsidian";
+import { Plugin, ItemView, Scope, Platform, getAllTags } from "obsidian";
 import { Constellation } from "./constellation.js";
 
 const VIEW = "nebula";
@@ -40,7 +40,10 @@ class NebulaView extends ItemView {
     for (const f of app.vault.getMarkdownFiles()) {
       if (f.path.startsWith(".")) continue;
       const i = f.path.indexOf("/");
-      notes.push({ id: f.path, name: f.basename, group: i < 0 ? "Home" : f.path.slice(0, i) });
+      // Tags (inline and frontmatter) drive the optional "Colour by tag" mode; "#" is stripped so the renderer gets bare names.
+      const cache = app.metadataCache.getFileCache(f);
+      const tags = cache ? (getAllTags(cache) || []).map((t) => t.replace(/^#/, "")) : [];
+      notes.push({ id: f.path, name: f.basename, group: i < 0 ? "Home" : f.path.slice(0, i), tags });
     }
     const rl = app.metadataCache.resolvedLinks;
     for (const a in rl) for (const b in rl[a]) links.push([a, b]);
